@@ -10,5 +10,4 @@ Original paper: [(ICML 2020) Do We Really Need to Access the Source Data? Source
 
 Change log:
 
-* 04/18: Finish OfficeHome's version.
-
+* 04/18: Finish OfficeHome's version, with only the SHOT-IM model
