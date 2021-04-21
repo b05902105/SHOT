@@ -218,6 +218,7 @@ def arguments_parsing():
     sys.add_argument('-m', '--mode', choices=['source_train', 'target_train', 'target_test'], required=True)
     sys.add_argument('-mp', '--model_path', default='./model/OfficeHome')
     sys.add_argument('-dp', '--data_path', default='/tmp2/yc980802/da/data/OfficeHome')
+    sys.add_argument('sm', '--source_model', action='store_true')
 
     args = parser.parse_args()
     model = Namespace(**{a.dest:args.__dict__[a.dest] for a in model._group_actions})
@@ -287,5 +288,5 @@ if __name__ == '__main__':
         model.load(source=True)
         target_train(dloaders, model)
     else:
-        model.load(source=False)
+        model.load(source=sargs.source_model)
         print('Accuracy: %.2f%%' % (100*cal_acc(dloaders['target_test'], model)))
