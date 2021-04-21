@@ -209,13 +209,13 @@ def arguments_parsing():
     parser = argparse.ArgumentParser()
 
     model = parser.add_argument_group('model')
-    model.add_argument('-m', '--mode', choices=['source_train', 'target_train', 'target_test'], required=True)
 
     model.add_argument('-im', '--info_max', action='store_true')
     model.add_argument('-s', '--source', required=False, type=int, default=0)
     model.add_argument('-t', '--target', required=False, type=int, default=1)
 
     sys = parser.add_argument_group('sys')
+    sys.add_argument('-m', '--mode', choices=['source_train', 'target_train', 'target_test'], required=True)
     sys.add_argument('-mp', '--model_path', default='./model/OfficeHome')
     sys.add_argument('-dp', '--data_path', default='/tmp2/yc980802/da/data/OfficeHome')
 
@@ -281,9 +281,9 @@ if __name__ == '__main__':
     dsets, dloaders = load_data(source_path, target_path, train_bs)
     model = Model(margs, sargs)
 
-    if margs.mode == 'source_train':
+    if sargs.mode == 'source_train':
         source_train(dloaders, margs, sargs)
-    elif margs.mode == 'target_train':
+    elif sargs.mode == 'target_train':
         model.load(source=True)
         target_train(dloaders, model)
     else:
