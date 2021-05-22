@@ -1,7 +1,9 @@
 import numpy as np
 from PIL import Image
 import argparse
+import random
 from argparse import Namespace
+from itertools import groupby
 
 import torch
 import torch.nn as nn
@@ -41,7 +43,7 @@ class ImageList(Dataset):
         path, label = self.imgs_path[idx].split(',')
         img = Image.open(path).convert(self.mode)
         return self.transform(img), int(label)
-    
+
 def train_transform():
     return transforms.Compose([
         transforms.Resize((256, 256)),
@@ -62,31 +64,35 @@ def test_transform():
     ])
 
 
-def load_data(source_path, target_path, bsize):
+def load_data(source_path, target_path, args):
+    margs, sargs = args
     dsets = {}
     dloaders = {}
-    
+
     src_txt = open(source_path, 'r').readlines()
     target_txt = open(target_path, 'r').readlines()
-    
+
+    if margs.imbalance_ratio > 0:
+        target_txt = imbalance_sampler(target_txt, margs.imbalance_ratio)
+
     dsize = len(src_txt)
     train_size = int(0.9 * dsize)
-    
+
     train_txt, val_txt = torch.utils.data.random_split(src_txt, [train_size, dsize - train_size])
-    
+
+    bsize = sargs.batch_size
     dsets['source_train'] = ImageList(train_txt, transform=train_transform())
     dloaders['source_train'] = DataLoader(dsets['source_train'], batch_size=bsize, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
-    
+
     dsets['source_val'] = ImageList(val_txt, transform=test_transform())
     dloaders['source_val'] = DataLoader(dsets['source_val'], batch_size=bsize, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
-    
+
     dsets['target_train'] = ImageList(target_txt, transform=train_transform())
     dloaders['target_train'] = DataLoader(dsets['target_train'], batch_size=bsize*2, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
 
-    
     dsets['target_test'] = ImageList(target_txt, transform=test_transform())
     dloaders['target_test'] = DataLoader(dsets['target_test'], batch_size=bsize*2, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
-    
+
     return dsets, dloaders
 
 def cal_acc(loader, model):
@@ -117,10 +123,10 @@ def source_train(dloaders, margs, sargs):
     for k, v in model.B.named_parameters():
         param_group += [{'params': v, 'lr': learning_rate}]
     for k, v in model.C.named_parameters():
-        param_group += [{'params': v, 'lr': learning_rate}]   
+        param_group += [{'params': v, 'lr': learning_rate}]
     optimizer = optim.SGD(param_group)
     optimizer = op_copy(optimizer)
-    
+
     max_iter = 20 * len(dloaders['source_train'])
 
     best_acc = 0
@@ -133,67 +139,67 @@ def source_train(dloaders, margs, sargs):
         for i, (source_x, source_y) in enumerate(dloaders['source_train']):
             lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
             source_x, source_y = source_x.cuda(), source_y.cuda()
-            
+
             outputs, _ = model.forward(source_x)
             loss = CrossEntropyLabelSmooth(num_classes=65, epsilon=0.1)(outputs, source_y)
-            
+
             total_loss += len(source_x)*loss.item()
             total_length += len(source_x)
-            
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            
+
             print('Step: %02d/%02d, Training Loss: %.4f' % (i+1, len(dloaders['source_train']), total_loss / total_length), end='\r')
 
         acc_val = cal_acc(dloaders['source_val'], model)
         model.train()
         print('Iter: %03d/%03d, Valid Acc: %.2f%%' % (iter_num + 1, max_iter, 100*acc_val))
-        
+
         if acc_val > best_acc:
             best_acc = acc_val
             best_model.copy(model)
 
     best_model.save(source=True)
-    
+
 def target_train(dloaders, model):
     model.target_train_mode()
-    
+
     for k, v in model.C.named_parameters():
         v.requires_grad = False
-    
+
     param_group = []
     learning_rate = 1e-2
     for k, v in model.F.named_parameters():
         param_group += [{'params': v, 'lr': learning_rate*0.1}]
     for k, v in model.B.named_parameters():
         param_group += [{'params': v, 'lr': learning_rate}]
-        
+
     optimizer = optim.SGD(param_group)
     optimizer = op_copy(optimizer)
-    
-    max_iter = 20
-    
+
+    max_iter = 50
+
     for iter_num in range(max_iter):
         for i, (target_x, target_y) in enumerate(dloaders['target_train']):
             lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
             target_x, target_y = target_x.cuda(), target_y.cuda()
-            
+
             output, features = model.forward(target_x)
-            
+
             softmax_output = nn.Softmax(dim=1)(output)
             entropy_loss = torch.mean(Entropy(softmax_output))
-            
+
             if model.margs.info_max:
                 msoftmax = softmax_output.mean(dim=0)
                 entropy_loss -= torch.sum(-msoftmax * torch.log(msoftmax + 1e-5))
-            
+
             optimizer.zero_grad()
             entropy_loss.backward()
             optimizer.step()
-            
+
             print('Iter: %02d, Step: %02d/%02d' % (iter_num+1, i+1, len(dloaders['target_train'])), end='\r')
-    
+
     model.save(source=False)
 
 def gen_path(path, name):
@@ -202,7 +208,7 @@ def gen_path(path, name):
     for i, sub_forder in enumerate(sorted(os.listdir(path))):
         for file in sorted(os.listdir(osp.join(path, sub_forder))):
             res += osp.join(path, sub_forder, file) + ',%d\n' % (i)
-            
+
     return res
 
 def arguments_parsing():
@@ -213,12 +219,14 @@ def arguments_parsing():
     model.add_argument('-im', '--info_max', action='store_true')
     model.add_argument('-s', '--source', required=False, type=int, default=0)
     model.add_argument('-t', '--target', required=False, type=int, default=1)
+    model.add_argument('-imr', '--imbalance_ratio', required=False, type=float, default=1)
 
     sys = parser.add_argument_group('sys')
     sys.add_argument('-m', '--mode', choices=['source_train', 'target_train', 'target_test'], required=True)
     sys.add_argument('-mp', '--model_path', default='./model/OfficeHome')
     sys.add_argument('-dp', '--data_path', default='/tmp2/yc980802/da/data/OfficeHome')
     sys.add_argument('-sm', '--source_model', action='store_true')
+    sys.add_argument('-bs', '--batch_size', type=int, default=32)
 
     args = parser.parse_args()
     model = Namespace(**{a.dest:args.__dict__[a.dest] for a in model._group_actions})
@@ -269,17 +277,32 @@ class Model:
     def copy(self, m):
         self.F, self.B, self.C = m.F, m.B, m.C
 
+def imbalance_sampler(data, imr=1):
+    group = [list(g) for k, g in groupby(data, key=lambda a: int(a[-2]))]
+
+#     sampling_g = [np.random.choice(g, size=int(len(g)*imr), replace=False) for g in group]
+#     l = [len(x) for x in sampling_g]
+#     ret = [item for g in sampling_g for item in g]
+
+#     return ret
+
+    cls_num = len(group)
+    cls_max = min([len(g) for g in group])
+    random.shuffle(group)
+    sampling_g = [np.random.choice(g, size=int(cls_max*imr**(i/(cls_num-1)))) for i, g in enumerate(group)]
+    ret = [item for g in sampling_g for item in g]
+    return ret
+
 if __name__ == '__main__':
     margs, sargs = arguments_parsing()
     names = ['Art', 'Clipart', 'Product', 'RealWorld']
 
     class_num = 65
-    train_bs = 32
 
     source_path = osp.join(sargs.data_path, names[margs.source] + '.txt')
     target_path = osp.join(sargs.data_path, names[margs.target] + '.txt')
 
-    dsets, dloaders = load_data(source_path, target_path, train_bs)
+    dsets, dloaders = load_data(source_path, target_path, (margs, sargs))
     model = Model(margs, sargs)
 
     if sargs.mode == 'source_train':
